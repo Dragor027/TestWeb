@@ -70,9 +70,51 @@
       background: radial-gradient(circle at 50% 20%, #09142b, #04070f 75%);
     }
     .info { text-align: center; font-size: 13px; opacity: 0.9; }
+    .splash-screen {
+      position: fixed;
+      inset: 0;
+      z-index: 10;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background:
+        linear-gradient(rgba(7, 11, 22, 0.78), rgba(7, 11, 22, 0.92)),
+        radial-gradient(circle at 50% 30%, rgba(0, 245, 255, 0.2), transparent 36%),
+        var(--bg);
+      transition: opacity 420ms ease, visibility 420ms ease;
+    }
+    .splash-screen.is-hidden {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+    .splash-content {
+      text-align: center;
+      max-width: 680px;
+    }
+    .splash-content h1 {
+      margin: 0 0 22px;
+      color: #ffffff;
+      font-size: clamp(42px, 8vw, 84px);
+      line-height: 1;
+      text-shadow:
+        0 0 16px rgba(0, 245, 255, 0.75),
+        0 0 34px rgba(255, 46, 166, 0.45);
+    }
+    .splash-content button {
+      font-size: 16px;
+      min-width: 170px;
+    }
   </style>
 </head>
 <body>
+  <div class="splash-screen" id="splashScreen">
+    <div class="splash-content">
+      <h1>Welcome to CyberBreak</h1>
+      <button id="splashStartBtn">Start</button>
+    </div>
+  </div>
+
   <div class="game-shell">
     <div class="topbar">
       <div class="hud" id="status">Prêt à démarrer</div>
@@ -87,6 +129,8 @@
     const ctx = canvas.getContext('2d');
     const statusText = document.getElementById('status');
     const startBtn = document.getElementById('startBtn');
+    const splashScreen = document.getElementById('splashScreen');
+    const splashStartBtn = document.getElementById('splashStartBtn');
 
     function resizeCanvas() {
       const rect = canvas.getBoundingClientRect();
@@ -105,22 +149,82 @@
     const bonuses = [];
     const bonusTypes = ['paddle', 'slow', 'double'];
 
+    const levels = [
+      {
+        name: 'Mur neon',
+        rows: 5,
+        cols: 10,
+        pattern: (r, c) => r < 5
+      },
+      {
+        name: 'Pyramide',
+        rows: 6,
+        cols: 11,
+        pattern: (r, c, rows, cols) => c >= r && c < cols - r
+      },
+      {
+        name: 'Double diamant',
+        rows: 7,
+        cols: 11,
+        pattern: (r, c, rows, cols) => {
+          const centerRow = Math.floor(rows / 2);
+          const leftCenter = 2;
+          const rightCenter = cols - 3;
+          const reach = centerRow - Math.abs(centerRow - r);
+          return Math.abs(c - leftCenter) <= reach || Math.abs(c - rightCenter) <= reach;
+        }
+      }
+    ];
     const brickConfig = { rows: 5, cols: 10, width: 0, height: 20, padding: 10, offsetTop: 56, offsetLeft: 18 };
     const bricks = [];
-    let score = 0, gameOver = false, won = false, started = false;
+    let score = 0, gameOver = false, won = false, started = false, currentLevel = 0, activeBrickCount = 0;
     let scoreMultiplier = 1;
 
-    function buildBricks() {
+    function buildBricks(resetAlive = true) {
+      const level = levels[currentLevel];
+      brickConfig.rows = level.rows;
+      brickConfig.cols = level.cols;
       brickConfig.width = (canvas.width - brickConfig.offsetLeft * 2 - brickConfig.padding * (brickConfig.cols - 1)) / brickConfig.cols;
+      activeBrickCount = 0;
+      const previousBricks = bricks.map(column => column.slice());
       for (let c = 0; c < brickConfig.cols; c++) {
         bricks[c] = [];
-        for (let r = 0; r < brickConfig.rows; r++) bricks[c][r] = { x: 0, y: 0, alive: true };
+        for (let r = 0; r < brickConfig.rows; r++) {
+          const active = level.pattern(r, c, brickConfig.rows, brickConfig.cols);
+          const previous = previousBricks[c]?.[r];
+          const alive = active && (resetAlive || !previous ? true : previous.alive);
+          bricks[c][r] = { x: 0, y: 0, active, alive };
+          if (alive) activeBrickCount++;
+        }
+      }
+    }
+
+    function resetBallAndPaddle() {
+      paddle.width = 120;
+      paddle.x = (canvas.width - paddle.width) / 2;
+      ball.x = canvas.width / 2; ball.y = canvas.height - 44; ball.dx = 2 + currentLevel * 0.35; ball.dy = -2 - currentLevel * 0.35;
+    }
+
+    function loadLevel(levelIndex) {
+      currentLevel = levelIndex;
+      bonuses.length = 0;
+      resetBallAndPaddle();
+      buildBricks();
+    }
+
+    function completeLevel() {
+      if (currentLevel < levels.length - 1) {
+        loadLevel(currentLevel + 1);
+      } else {
+        won = true;
+        gameOver = true;
       }
     }
 
     document.addEventListener('keydown', e => {
       if (e.key === 'ArrowLeft') paddle.movingLeft = true;
       if (e.key === 'ArrowRight') paddle.movingRight = true;
+      if (e.key === 'Enter' && (!started || gameOver)) startGame();
     });
     document.addEventListener('keyup', e => {
       if (e.key === 'ArrowLeft') paddle.movingLeft = false;
@@ -146,7 +250,7 @@
       for (let c = 0; c < brickConfig.cols; c++) {
         for (let r = 0; r < brickConfig.rows; r++) {
           const b = bricks[c][r];
-          if (!b.alive) continue;
+          if (!b.active || !b.alive) continue;
           const brickX = c * (brickConfig.width + brickConfig.padding) + brickConfig.offsetLeft;
           const brickY = r * (brickConfig.height + brickConfig.padding) + brickConfig.offsetTop;
           b.x = brickX; b.y = brickY;
@@ -175,9 +279,13 @@
           if (ball.x > b.x && ball.x < b.x + brickConfig.width && ball.y > b.y && ball.y < b.y + brickConfig.height) {
             ball.dy = -ball.dy;
             b.alive = false;
+            activeBrickCount--;
             score += scoreMultiplier;
             maybeSpawnBonus(b.x + brickConfig.width / 2, b.y + brickConfig.height / 2);
-            if (score >= brickConfig.rows * brickConfig.cols) { won = true; gameOver = true; }
+            if (activeBrickCount <= 0) {
+              completeLevel();
+              return;
+            }
           }
         }
       }
@@ -214,7 +322,7 @@
       collisionDetection();
     }
 
-    function drawHUD() { statusText.textContent = `Score: ${score} • Multiplicateur: x${scoreMultiplier}`; }
+    function drawHUD() { statusText.textContent = `Niveau ${currentLevel + 1}/3: ${levels[currentLevel].name} • Score: ${score} • Multiplicateur: x${scoreMultiplier}`; }
 
     function drawEndScreen() {
       ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -233,20 +341,21 @@
     }
 
     function resetGame() {
-      score = 0; gameOver = false; won = false; bonuses.length = 0; scoreMultiplier = 1;
-      paddle.width = 120;
-      paddle.x = (canvas.width - paddle.width) / 2;
-      ball.x = canvas.width / 2; ball.y = canvas.height - 44; ball.dx = 2; ball.dy = -2;
-      buildBricks();
+      score = 0; gameOver = false; won = false; scoreMultiplier = 1;
+      loadLevel(Math.floor(Math.random() * levels.length));
     }
 
-    startBtn.addEventListener('click', () => {
+    function startGame() {
       started = true;
       resetGame();
       statusText.textContent = 'Partie en cours...';
-    });
+      splashScreen.classList.add('is-hidden');
+    }
 
-    window.addEventListener('resize', () => { resizeCanvas(); buildBricks(); });
+    startBtn.addEventListener('click', startGame);
+    splashStartBtn.addEventListener('click', startGame);
+
+    window.addEventListener('resize', () => { resizeCanvas(); buildBricks(false); });
     resizeCanvas();
     buildBricks();
     loop();
